@@ -60,7 +60,7 @@ class Checkpoint(models.Model):
     last_scanned_block = fields.BigIntField()
     updated_at = fields.DatetimeField(auto_now=True)
 
-    class Meta:
+    class Meta(models.Model.Meta):
         table = "checkpoints"
 
 
@@ -80,7 +80,7 @@ class RawLog(models.Model):
     data = fields.TextField()
     created_at = fields.DatetimeField(auto_now_add=True)
 
-    class Meta:
+    class Meta(models.Model.Meta):
         table = "raw_logs"
         unique_together = (("transaction_hash", "log_index"),)
 
@@ -97,10 +97,10 @@ class BalanceChange(models.Model):
     token_id = TokenIdField(db_index=True)
     amount_delta = ExactDecimalField(max_digits=78, decimal_places=0)
     counterparty = fields.CharField(max_length=42, null=True)
-    details = fields.JSONField(null=True)
+    details: fields.JSONField = fields.JSONField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
-    class Meta:
+    class Meta(models.Model.Meta):
         table = "balance_changes"
         unique_together = (
             (
@@ -122,6 +122,6 @@ class CurrentBalance(models.Model):
     balance = ExactDecimalField(max_digits=78, decimal_places=0, default=Decimal(0))
     updated_at = fields.DatetimeField(auto_now=True)
 
-    class Meta:
+    class Meta(models.Model.Meta):
         table = "current_balances"
         unique_together = (("wallet", "token_address", "token_id"),)

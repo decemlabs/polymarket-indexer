@@ -2,7 +2,8 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from eth_abi import decode
+from eth_abi.abi import decode
+from eth_abi.exceptions import DecodingError
 from tortoise import Tortoise
 from web3 import Web3
 
@@ -84,7 +85,7 @@ def normalize_transaction(
             to_a = ("0x" + l["topic2"][-40:]).lower() if l.get("topic2") else ""
             try:
                 (amount,) = decode(["uint256"], data_bytes)
-            except Exception:
+            except DecodingError, ValueError, TypeError:
                 amount = int(data_hex, 16) if data_hex else 0
 
             if amount == 0:
@@ -162,7 +163,7 @@ def normalize_transaction(
             to_a = ("0x" + l["topic3"][-40:]).lower() if l.get("topic3") else ""
             try:
                 token_id, value = decode(["uint256", "uint256"], data_bytes)
-            except Exception:
+            except DecodingError, ValueError, TypeError:
                 token_id = int(data_hex[:64], 16) if len(data_hex) >= 64 else 0
                 value = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 0
 
@@ -235,7 +236,7 @@ def normalize_transaction(
             to_a = ("0x" + l["topic3"][-40:]).lower() if l.get("topic3") else ""
             try:
                 ids, vals = decode(["uint256[]", "uint256[]"], data_bytes)
-            except Exception as e:
+            except (DecodingError, ValueError, TypeError) as e:
                 logger.warning(f"Error decoding TransferBatch in {tx_hash}: {e}")
                 continue
 

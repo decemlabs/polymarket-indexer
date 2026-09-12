@@ -26,3 +26,5 @@ packages = ["src/indexer"]
 [tool.basedpyright]
 venvPath = "."
 venv = ".venv"
+typeCheckingMode = "standard"
+

@@ -5,6 +5,8 @@ from decimal import Decimal
 from typing import Any
 
 from web3 import Web3
+from web3.exceptions import Web3Exception
+from web3.types import BlockIdentifier
 
 from .config import settings
 from .contracts import CTF, ERC20_BALANCE_OF_ABI, ERC1155_BALANCE_OF_ABI, PUSD, USDC_E
@@ -14,7 +16,7 @@ from .rpc import MultiRpcClient, rpc_client
 logger = logging.getLogger(__name__)
 
 
-def to_int_balance(val: Any) -> int:
+def to_int_balance(val: int | str | Decimal) -> int:
     """Safely converts string, decimal, or float representation to exact integer."""
     if isinstance(val, int):
         return val
@@ -24,7 +26,7 @@ def to_int_balance(val: Any) -> int:
     return int(s)
 
 
-def to_int_token_id(val: Any) -> int:
+def to_int_token_id(val: int | str | Decimal) -> int:
     """Safely converts token ID (including legacy scientific strings) to exact integer."""
     if isinstance(val, int):
         return val
@@ -35,6 +37,9 @@ def to_int_token_id(val: Any) -> int:
 
 
 class OnChainVerifier:
+    rpc: MultiRpcClient
+    wallet: str
+
     def __init__(
         self,
         rpc: MultiRpcClient | None = None,
@@ -45,7 +50,7 @@ class OnChainVerifier:
 
     async def verify_at_block(
         self,
-        block_identifier: int | str,
+        block_identifier: BlockIdentifier = "latest",
         limit_positions: int | None = None,
     ) -> dict[str, Any]:
         """
@@ -104,9 +109,9 @@ class OnChainVerifier:
                     "match": match_usdc,
                 }
             )
-        except Exception as e:
+        except (Web3Exception, OSError, ValueError) as e:
             logger.warning(
-                f"Failed to check on-chain USDC.e at block {block_identifier}: {e}"
+                f"Failed to check on-chain USDC.e at block {block_identifier!r}: {e}"
             )
 
         # Check pUSD
@@ -134,9 +139,9 @@ class OnChainVerifier:
                     "match": match_pusd,
                 }
             )
-        except Exception as e:
+        except (Web3Exception, OSError, ValueError) as e:
             logger.warning(
-                f"Failed to check on-chain pUSD at block {block_identifier}: {e}"
+                f"Failed to check on-chain pUSD at block {block_identifier!r}: {e}"
             )
 
         # 2. Verify ERC-1155 positions
@@ -162,7 +167,7 @@ class OnChainVerifier:
                     "diff": diff,
                     "match": (diff == 0),
                 }
-            except Exception as e:
+            except (Web3Exception, OSError, ValueError) as e:
                 return {
                     "token": f"CTF {str(tid)[:14]}...",
                     "token_id": tid,

@@ -303,7 +303,7 @@ class BlockchainScanner:
                 self.chunk_size = new_chunk
                 await asyncio.sleep(0.5)
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(
                     f"Unexpected error scanning blocks {current_start}..{chunk_end}: {e}. Retrying with backoff..."
                 )
@@ -347,6 +347,6 @@ class BlockchainScanner:
             except KeyboardInterrupt:
                 logger.info("Live indexing stopped by user.")
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Error in live loop: {e}. Sleeping {poll_interval}s...")
                 await asyncio.sleep(poll_interval)

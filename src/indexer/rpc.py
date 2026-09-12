@@ -1,11 +1,12 @@
 import logging
 import random
 import time
-from typing import Any
+from typing import Any, cast
 
 from web3 import Web3
-from web3.exceptions import Web3RPCError
+from web3.exceptions import Web3Exception, Web3RPCError
 from web3.middleware import ExtraDataToPOAMiddleware
+from web3.types import FilterParams
 
 from .config import settings
 from .contracts import ERC20_BALANCE_OF_ABI, ERC1155_BALANCE_OF_ABI
@@ -72,7 +73,7 @@ class MultiRpcClient:
                 block_number = node.w3.eth.block_number
                 node.record_success()
                 return int(block_number)
-            except Exception as e:
+            except (Web3Exception, OSError, ValueError) as e:
                 logger.warning(f"Failed to get block number from {node.url}: {e}")
                 self.rotate_node()
         raise RuntimeError("All RPC nodes failed to fetch latest block number")
@@ -88,7 +89,7 @@ class MultiRpcClient:
         for attempt in range(1, max_retries + 1):
             node = self.current_node
             try:
-                raw_logs = node.w3.eth.get_logs(filter_params)
+                raw_logs = node.w3.eth.get_logs(cast(FilterParams, filter_params))
                 node.record_success()
                 return [dict(log) for log in raw_logs]
             except Web3RPCError as e:
@@ -113,7 +114,7 @@ class MultiRpcClient:
                     f"RPC error on {node.url} (attempt {attempt}/{max_retries}): {e}"
                 )
                 self.rotate_node()
-            except Exception as e:
+            except (Web3Exception, OSError, ValueError) as e:
                 logger.warning(
                     f"Connection/HTTP error on {node.url} (attempt {attempt}/{max_retries}): {e}"
                 )
@@ -144,7 +145,7 @@ class MultiRpcClient:
                 bal = contract.functions.balanceOf(checksum_wallet).call()
                 node.record_success()
                 return int(bal)
-            except Exception as e:
+            except (Web3Exception, OSError, ValueError) as e:
                 logger.warning(f"Error calling balanceOf on {node.url}: {e}")
                 self.rotate_node()
         raise RuntimeError(f"All RPC nodes failed calling balanceOf on {token_address}")
@@ -161,7 +162,7 @@ class MultiRpcClient:
                 bal = contract.functions.balanceOf(checksum_wallet, token_id).call()
                 node.record_success()
                 return int(bal)
-            except Exception as e:
+            except (Web3Exception, OSError, ValueError) as e:
                 logger.warning(f"Error calling balanceOf 1155 on {node.url}: {e}")
                 self.rotate_node()
         raise RuntimeError(

@@ -4,6 +4,7 @@ from typing import Any
 
 from tortoise import Tortoise
 
+from . import models as models_module
 from .config import settings
 from .models import BalanceChange, Checkpoint, RawLog
 
@@ -40,8 +41,12 @@ async def _migrate_sqlite_schema(conn: Any) -> None:
             f"Found {len(all_e_rows):,} legacy scientific token_ids. Canonicalizing to exact decimal strings..."
         )
         updates = [[str(int(Decimal(r["token_id"]))), r["id"]] for r in all_e_rows]
-        await conn.execute_many("UPDATE balance_changes SET token_id = ? WHERE id = ?;", updates)
-        logger.info(f"Successfully canonicalized {len(updates):,} token_ids in balance_changes.")
+        await conn.execute_many(
+            "UPDATE balance_changes SET token_id = ? WHERE id = ?;", updates
+        )
+        logger.info(
+            f"Successfully canonicalized {len(updates):,} token_ids in balance_changes."
+        )
 
     # 3. Clean up any stale scientific token_id entries from current_balances
     await conn.execute_query(
@@ -54,7 +59,7 @@ async def init_db() -> None:
     logger.info("Initializing Tortoise ORM...")
     await Tortoise.init(
         db_url=db_url,
-        modules={"models": ["indexer.models"]},
+        modules={"models": [models_module.__name__]},
     )
     await Tortoise.generate_schemas()
     conn = Tortoise.get_connection("default")
