@@ -3,10 +3,11 @@ from decimal import Decimal
 from typing import Any
 
 from tortoise import Tortoise
+from tortoise.functions import Count, Max, Min
 
 from . import models as models_module
 from .config import settings
-from .models import BalanceChange, Checkpoint, RawLog
+from .models import BalanceChange, Checkpoint, CurrentBalance, RawLog
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +29,10 @@ async def _migrate_sqlite_schema(conn: Any) -> None:
         )
 
     # Миграция token_id из старой научной нотации в обычные строки
-    legacy_e_rows = await conn.execute_query_dict(
-        "SELECT id, token_id FROM balance_changes WHERE token_id LIKE '%E%' OR token_id LIKE '%e%' LIMIT 1;"
-    )
-    if legacy_e_rows:
-        all_e_rows = await conn.execute_query_dict(
-            "SELECT id, token_id FROM balance_changes WHERE token_id LIKE '%E%' OR token_id LIKE '%e%';"
+    legacy_e_row = await BalanceChange.filter(token_id__icontains="e").first()
+    if legacy_e_row:
+        all_e_rows = await BalanceChange.filter(token_id__icontains="e").values(
+            "id", "token_id"
         )
         logger.info(
             f"Found {len(all_e_rows):,} legacy scientific token_ids. Canonicalizing to exact decimal strings..."
@@ -46,9 +45,7 @@ async def _migrate_sqlite_schema(conn: Any) -> None:
             f"Successfully canonicalized {len(updates):,} token_ids in balance_changes."
         )
 
-    await conn.execute_query(
-        "DELETE FROM current_balances WHERE token_id LIKE '%E%' OR token_id LIKE '%e%';"
-    )
+    await CurrentBalance.filter(token_id__icontains="e").delete()
 
 
 async def init_db() -> None:
@@ -104,35 +101,38 @@ async def insert_raw_logs(logs: list[dict[str, Any]]) -> int:
 
 
 async def get_raw_logs_stats() -> dict[str, Any]:
+    agg = (
+        await RawLog.all()
+        .annotate(
+            total=Count("id"),
+            min_b=Min("block_number"),
+            max_b=Max("block_number"),
+        )
+        .values("total", "min_b", "max_b")
+    )
+
+    events = (
+        await RawLog.all()
+        .annotate(cnt=Count("id"))
+        .group_by("event_name")
+        .order_by("-cnt")
+        .values("event_name", "cnt")
+    )
+    contracts = (
+        await RawLog.all()
+        .annotate(cnt=Count("id"))
+        .group_by("contract_address")
+        .order_by("-cnt")
+        .values("contract_address", "cnt")
+    )
+
     stats: dict[str, Any] = {
-        "total_logs": 0,
-        "min_block": None,
-        "max_block": None,
-        "by_event": {},
-        "by_contract": {},
+        "total_logs": agg[0]["total"] if agg and agg[0] else 0,
+        "min_block": agg[0]["min_b"] if agg and agg[0] else None,
+        "max_block": agg[0]["max_b"] if agg and agg[0] else None,
+        "by_event": {r["event_name"]: r["cnt"] for r in events},
+        "by_contract": {r["contract_address"]: r["cnt"] for r in contracts},
     }
-    conn = Tortoise.get_connection("default")
-
-    agg = await conn.execute_query_dict(
-        "SELECT COUNT(*) as total, MIN(block_number) as min_b, MAX(block_number) as max_b FROM raw_logs"
-    )
-    if agg and agg[0]:
-        stats["total_logs"] = agg[0]["total"] or 0
-        stats["min_block"] = agg[0]["min_b"]
-        stats["max_block"] = agg[0]["max_b"]
-
-    events = await conn.execute_query_dict(
-        "SELECT event_name, COUNT(*) as cnt FROM raw_logs GROUP BY event_name ORDER BY cnt DESC"
-    )
-    for r in events:
-        stats["by_event"][r["event_name"]] = r["cnt"]
-
-    contracts = await conn.execute_query_dict(
-        "SELECT contract_address, COUNT(*) as cnt FROM raw_logs GROUP BY contract_address ORDER BY cnt DESC"
-    )
-    for r in contracts:
-        stats["by_contract"][r["contract_address"]] = r["cnt"]
-
     return stats
 
 
@@ -150,29 +150,24 @@ async def insert_balance_changes(changes: list[dict[str, Any]]) -> int:
 
 
 async def get_balance_changes_stats() -> dict[str, Any]:
-    stats: dict[str, Any] = {
-        "total_changes": 0,
-        "by_operation": {},
-        "by_token_type": {},
+    total = await BalanceChange.all().count()
+    ops = (
+        await BalanceChange.all()
+        .annotate(cnt=Count("id"))
+        .group_by("operation_type")
+        .order_by("-cnt")
+        .values("operation_type", "cnt")
+    )
+    tokens = (
+        await BalanceChange.all()
+        .annotate(cnt=Count("id"))
+        .group_by("token_type")
+        .order_by("-cnt")
+        .values("token_type", "cnt")
+    )
+
+    return {
+        "total_changes": total,
+        "by_operation": {r["operation_type"]: r["cnt"] for r in ops},
+        "by_token_type": {r["token_type"]: r["cnt"] for r in tokens},
     }
-    conn = Tortoise.get_connection("default")
-
-    total_res = await conn.execute_query_dict(
-        "SELECT COUNT(*) as total FROM balance_changes"
-    )
-    if total_res and total_res[0]:
-        stats["total_changes"] = total_res[0]["total"] or 0
-
-    ops = await conn.execute_query_dict(
-        "SELECT operation_type, COUNT(*) as cnt FROM balance_changes GROUP BY operation_type ORDER BY cnt DESC"
-    )
-    for r in ops:
-        stats["by_operation"][r["operation_type"]] = r["cnt"]
-
-    tokens = await conn.execute_query_dict(
-        "SELECT token_type, COUNT(*) as cnt FROM balance_changes GROUP BY token_type ORDER BY cnt DESC"
-    )
-    for r in tokens:
-        stats["by_token_type"][r["token_type"]] = r["cnt"]
-
-    return stats

@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from typing import Any
 
 from tortoise import Tortoise
@@ -47,13 +48,6 @@ async def update_current_balances(wallet: str | None = None) -> int:
             [target_wallet],
         )
 
-        # Подсчет активных позиций с CAST к REAL для корректного сравнения в SQLite
-        res = await conn.execute_query_dict(
-            "SELECT COUNT(*) as cnt FROM current_balances WHERE wallet = ? AND CAST(balance AS REAL) > 0;",
-            [target_wallet],
-        )
-        active_count = res[0]["cnt"] if res else 0
-
     else:
         await conn.execute_query(
             """
@@ -82,9 +76,9 @@ async def update_current_balances(wallet: str | None = None) -> int:
             [target_wallet],
         )
 
-        active_count = await CurrentBalance.filter(
-            wallet=target_wallet, balance__gt=0
-        ).count()
+    active_count = await CurrentBalance.filter(
+        wallet=target_wallet, balance__gt=0
+    ).count()
 
     logger.info(
         f"Replay complete for {target_wallet}: {active_count:,} active non-zero positions."
@@ -94,25 +88,11 @@ async def update_current_balances(wallet: str | None = None) -> int:
 
 async def get_current_balances(wallet: str | None = None) -> list[dict[str, Any]]:
     target_wallet = Web3.to_checksum_address(wallet or settings.checksum_wallet)
-    conn = Tortoise.get_connection("default")
-    is_sqlite = conn.capabilities.dialect == "sqlite"
-
-    if is_sqlite:
-        return await conn.execute_query_dict(
-            """
-            SELECT token_type, token_address, token_id, balance, updated_at
-            FROM current_balances
-            WHERE wallet = ? AND CAST(balance AS REAL) > 0
-            ORDER BY token_type, CAST(balance AS REAL) DESC;
-            """,
-            [target_wallet],
-        )
-
-    return (
-        await CurrentBalance.filter(
-            wallet=target_wallet,
-            balance__gt=0,
-        )
-        .order_by("token_type", "-balance")
-        .values("token_type", "token_address", "token_id", "balance", "updated_at")
+    positions = await CurrentBalance.filter(
+        wallet=target_wallet,
+        balance__gt=0,
+    ).values("token_type", "token_address", "token_id", "balance", "updated_at")
+    positions.sort(
+        key=lambda x: (x["token_type"], -Decimal(str(x["balance"]))),
     )
+    return positions

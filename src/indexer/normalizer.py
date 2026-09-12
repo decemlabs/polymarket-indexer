@@ -4,7 +4,6 @@ from typing import Any
 
 from eth_abi.abi import decode
 from eth_abi.exceptions import DecodingError
-from tortoise import Tortoise
 from web3 import Web3
 
 from .config import settings
@@ -343,11 +342,8 @@ class TransactionNormalizer:
     async def process_all(self, chunk_blocks: int = 50000) -> int:
         from .db import get_checkpoint, save_checkpoint
 
-        conn = Tortoise.get_connection("default")
-        max_row = await conn.execute_query_dict(
-            "SELECT MAX(block_number) as max_b FROM raw_logs;"
-        )
-        max_raw_block = max_row[0]["max_b"] if max_row and max_row[0]["max_b"] else None
+        latest_log = await RawLog.all().order_by("-block_number").first()
+        max_raw_block = latest_log.block_number if latest_log else None
 
         if max_raw_block is None:
             logger.info("No raw logs found to normalize.")
