@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 def to_int_balance(val: int | str | Decimal) -> int:
-    """Safely converts string, decimal, or float representation to exact integer."""
     if isinstance(val, int):
         return val
     s = str(val).strip()
@@ -27,7 +26,6 @@ def to_int_balance(val: int | str | Decimal) -> int:
 
 
 def to_int_token_id(val: int | str | Decimal) -> int:
-    """Safely converts token ID (including legacy scientific strings) to exact integer."""
     if isinstance(val, int):
         return val
     s = str(val).strip()
@@ -53,10 +51,6 @@ class OnChainVerifier:
         block_identifier: BlockIdentifier = "latest",
         limit_positions: int | None = None,
     ) -> dict[str, Any]:
-        """
-        Compares calculated balances against on-chain balanceOf calls at the specified block.
-        """
-        # Ensure current_balances is up to date
         await update_current_balances(self.wallet)
         calculated_positions = await get_current_balances(self.wallet)
 
@@ -75,7 +69,6 @@ class OnChainVerifier:
             "all_matched": True,
         }
 
-        # 1. Verify ERC-20 collateral tokens
         calc_usdc = 0
         calc_pusd = 0
         for pos in calculated_positions:
@@ -114,7 +107,6 @@ class OnChainVerifier:
                 f"Failed to check on-chain USDC.e at block {block_identifier!r}: {e}"
             )
 
-        # Check pUSD
         try:
             actual_pusd = await asyncio.to_thread(
                 pusd_contract.functions.balanceOf(self.wallet).call,
@@ -144,7 +136,6 @@ class OnChainVerifier:
                 f"Failed to check on-chain pUSD at block {block_identifier!r}: {e}"
             )
 
-        # 2. Verify ERC-1155 positions
         erc1155_positions = [
             p for p in calculated_positions if p["token_type"] == "ERC1155"
         ]

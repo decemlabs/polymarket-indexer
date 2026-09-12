@@ -11,18 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 async def update_current_balances(wallet: str | None = None) -> int:
-    """
-    Replays all balance_changes and updates current_balances via atomic database upsert.
-    Correctly cleans up zero positions and handles SQLite vs PostgreSQL type differences.
-    Returns the count of active non-zero positions.
-    """
     target_wallet = Web3.to_checksum_address(wallet or settings.checksum_wallet)
     conn = Tortoise.get_connection("default")
     is_sqlite = conn.capabilities.dialect == "sqlite"
 
     if is_sqlite:
-        # In SQLite, format SUM(amount_delta) without decimals using PRINTF('%.0f', ...)
-        # Scope by wallet (or NULL for backwards compatibility)
         await conn.execute_query(
             """
             INSERT INTO current_balances (wallet, token_type, token_address, token_id, balance, updated_at)
@@ -45,7 +38,6 @@ async def update_current_balances(wallet: str | None = None) -> int:
             [target_wallet, target_wallet],
         )
 
-        # Clean up zero or negative balances (handles string representations '0', '0.0')
         await conn.execute_query(
             """
             DELETE FROM current_balances
@@ -55,7 +47,7 @@ async def update_current_balances(wallet: str | None = None) -> int:
             [target_wallet],
         )
 
-        # Count active positions avoiding SQLite text affinity trap ('0' > 0 is true in SQLite)
+        # Подсчет активных позиций с CAST к REAL для корректного сравнения в SQLite
         res = await conn.execute_query_dict(
             "SELECT COUNT(*) as cnt FROM current_balances WHERE wallet = ? AND CAST(balance AS REAL) > 0;",
             [target_wallet],
@@ -63,7 +55,6 @@ async def update_current_balances(wallet: str | None = None) -> int:
         active_count = res[0]["cnt"] if res else 0
 
     else:
-        # PostgreSQL path
         await conn.execute_query(
             """
             INSERT INTO current_balances (wallet, token_type, token_address, token_id, balance, updated_at)
@@ -107,7 +98,6 @@ async def get_current_balances(wallet: str | None = None) -> list[dict[str, Any]
     is_sqlite = conn.capabilities.dialect == "sqlite"
 
     if is_sqlite:
-        # Raw query to properly sort numerically in SQLite (avoiding alphabetical string sorting)
         return await conn.execute_query_dict(
             """
             SELECT token_type, token_address, token_id, balance, updated_at

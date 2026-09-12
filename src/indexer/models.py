@@ -5,11 +5,7 @@ from tortoise import fields, models
 
 
 class TokenIdField(fields.CharField):
-    """
-    Stores 256-bit EVM token identifiers as canonical decimal strings.
-    Protects against float truncation, scientific notation (e.g. 1E+76),
-    and ORM decimal normalization issues.
-    """
+    """Хранит 256-битные EVM token ID как строку без научной нотации."""
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("max_length", 78)
@@ -33,11 +29,7 @@ class TokenIdField(fields.CharField):
 
 
 class ExactDecimalField(fields.DecimalField):
-    """
-    DecimalField that avoids Tortoise's default .normalize() call,
-    which turns trailing zeros into scientific notation (e.g. Decimal('200000') -> '2E+5').
-    Guarantees exact integer/decimal serialization in standard notation.
-    """
+    """DecimalField без .normalize() — защита от научной нотации (2E+5)."""
 
     def to_python_value(self, value: Any) -> Decimal | None:
         if value is None:

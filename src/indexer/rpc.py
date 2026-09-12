@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class RangeLimitError(Exception):
-    """Raised when an RPC node rejects a getLogs query because the block range is too large."""
+    pass
 
 
 class RpcNode:
@@ -29,7 +29,6 @@ class RpcNode:
     def is_healthy(self, cooloff_seconds: float = 30.0) -> bool:
         if self.failure_count == 0:
             return True
-        # If cooled off, give it another chance
         return time.time() - self.last_failed_at > cooloff_seconds
 
     def record_success(self) -> None:
@@ -49,13 +48,11 @@ class MultiRpcClient:
 
     @property
     def current_node(self) -> RpcNode:
-        # Find next healthy node
         for i in range(len(self.nodes)):
             idx = (self._current_index + i) % len(self.nodes)
             if self.nodes[idx].is_healthy():
                 self._current_index = idx
                 return self.nodes[idx]
-        # If all nodes are in cooloff, fallback to current
         return self.nodes[self._current_index]
 
     def rotate_node(self) -> RpcNode:
@@ -94,7 +91,6 @@ class MultiRpcClient:
                 return [dict(log) for log in raw_logs]
             except Web3RPCError as e:
                 err_msg = str(e).lower()
-                # Check for block range limits
                 if any(
                     phrase in err_msg
                     for phrase in [
@@ -109,7 +105,6 @@ class MultiRpcClient:
                         f"Block range exceeded on {node.url}: {e}"
                     ) from e
 
-                # Rate limiting or server errors
                 logger.warning(
                     f"RPC error on {node.url} (attempt {attempt}/{max_retries}): {e}"
                 )
@@ -130,7 +125,6 @@ class MultiRpcClient:
 
     @property
     def w3(self) -> Web3:
-        """Returns the Web3 instance of the currently active healthy RPC node."""
         return self.current_node.w3
 
     def get_erc20_balance(self, token_address: str, wallet: str) -> int:
@@ -170,5 +164,4 @@ class MultiRpcClient:
         )
 
 
-# Singleton RPC client instance
 rpc_client = MultiRpcClient()

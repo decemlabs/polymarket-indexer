@@ -19,8 +19,6 @@ def get_tortoise_db_url(raw_url: str | None = None) -> str:
 
 
 async def _migrate_sqlite_schema(conn: Any) -> None:
-    """Safely adds missing columns and migrates legacy data for existing SQLite databases."""
-    # 1. Add wallet column to balance_changes if missing
     cols = await conn.execute_query_dict("PRAGMA table_info(balance_changes);")
     col_names = {c["name"] for c in cols}
     if col_names and "wallet" not in col_names:
@@ -29,7 +27,7 @@ async def _migrate_sqlite_schema(conn: Any) -> None:
             "ALTER TABLE balance_changes ADD COLUMN wallet VARCHAR(42);"
         )
 
-    # 2. Check and migrate legacy scientific notation in token_id
+    # Миграция token_id из старой научной нотации в обычные строки
     legacy_e_rows = await conn.execute_query_dict(
         "SELECT id, token_id FROM balance_changes WHERE token_id LIKE '%E%' OR token_id LIKE '%e%' LIMIT 1;"
     )
@@ -48,7 +46,6 @@ async def _migrate_sqlite_schema(conn: Any) -> None:
             f"Successfully canonicalized {len(updates):,} token_ids in balance_changes."
         )
 
-    # 3. Clean up any stale scientific token_id entries from current_balances
     await conn.execute_query(
         "DELETE FROM current_balances WHERE token_id LIKE '%E%' OR token_id LIKE '%e%';"
     )
@@ -98,7 +95,6 @@ async def insert_raw_logs(logs: list[dict[str, Any]]) -> int:
         return 0
 
     model_instances = [RawLog(**l) for l in logs]
-    # In PostgreSQL, bulk_create with ignore_conflicts=True uses ON CONFLICT DO NOTHING
     await RawLog.bulk_create(
         model_instances,
         ignore_conflicts=True,
@@ -117,7 +113,6 @@ async def get_raw_logs_stats() -> dict[str, Any]:
     }
     conn = Tortoise.get_connection("default")
 
-    # Aggregate counts
     agg = await conn.execute_query_dict(
         "SELECT COUNT(*) as total, MIN(block_number) as min_b, MAX(block_number) as max_b FROM raw_logs"
     )

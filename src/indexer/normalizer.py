@@ -26,14 +26,9 @@ def normalize_transaction(
     logs: list[dict[str, Any]],
     wallet: str,
 ) -> list[dict[str, Any]]:
-    """
-    Analyzes all raw logs in a transaction involving `wallet` and deduces
-    the exact economic operation and balance deltas for each token movement.
-    """
     wallet_lower = wallet.lower()
     balance_changes: list[dict[str, Any]] = []
 
-    # 1. High-level transaction context
     has_exchange = any(
         l["contract_address"] in EXCHANGE_CONTRACTS
         or "Order" in (l["event_name"] or "")
@@ -45,7 +40,6 @@ def normalize_transaction(
     has_onramp = any(l["contract_address"] == COLLATERAL_ONRAMP for l in logs)
     has_offramp = any(l["contract_address"] == COLLATERAL_OFFRAMP for l in logs)
 
-    # Context details from exchange order logs (if any)
     order_details: dict[str, Any] = {}
     for l in logs:
         if l.get("event_name") in (
@@ -60,7 +54,6 @@ def normalize_transaction(
                 order_details["order_hash"] = l["topic1"]
             break
 
-    # 2. First pass: detect if wallet gave shares on exchange
     wallet_sold_shares = False
     for l in logs:
         ev = l.get("event_name")
@@ -70,7 +63,6 @@ def normalize_transaction(
                 wallet_sold_shares = True
                 break
 
-    # 3. Process each log and extract balance movements
     for l in logs:
         ev = l.get("event_name")
         block_number = l["block_number"]
@@ -79,7 +71,7 @@ def normalize_transaction(
         data_hex = l["data"].removeprefix("0x") if l.get("data") else ""
         data_bytes = bytes.fromhex(data_hex) if data_hex else b""
 
-        # Case A: ERC-20 Collateral Transfer (USDC.e or pUSD)
+        # ERC-20 (USDC.e / pUSD)
         if ev == "Transfer" and contract_addr in COLLATERAL_TOKENS:
             from_a = ("0x" + l["topic1"][-40:]).lower() if l.get("topic1") else ""
             to_a = ("0x" + l["topic2"][-40:]).lower() if l.get("topic2") else ""
@@ -91,7 +83,7 @@ def normalize_transaction(
             if amount == 0:
                 continue
 
-            # Skip self-transfers (net change is 0)
+            # Пропуск переводов самому себе (сальдо 0)
             if from_a == wallet_lower and to_a == wallet_lower:
                 continue
 
@@ -157,7 +149,7 @@ def normalize_transaction(
                     }
                 )
 
-        # Case B: ERC-1155 TransferSingle (CTF outcome tokens)
+        # ERC-1155 TransferSingle (CTF)
         elif ev == "TransferSingle" and contract_addr == CTF:
             from_a = ("0x" + l["topic2"][-40:]).lower() if l.get("topic2") else ""
             to_a = ("0x" + l["topic3"][-40:]).lower() if l.get("topic3") else ""
@@ -170,7 +162,7 @@ def normalize_transaction(
             if value == 0:
                 continue
 
-            # Skip self-transfers (net change is 0)
+            # Пропуск переводов самому себе
             if from_a == wallet_lower and to_a == wallet_lower:
                 continue
 
@@ -230,7 +222,7 @@ def normalize_transaction(
                     }
                 )
 
-        # Case C: ERC-1155 TransferBatch (CTF batch outcome tokens)
+        # ERC-1155 TransferBatch (CTF)
         elif ev == "TransferBatch" and contract_addr == CTF:
             from_a = ("0x" + l["topic2"][-40:]).lower() if l.get("topic2") else ""
             to_a = ("0x" + l["topic3"][-40:]).lower() if l.get("topic3") else ""
@@ -240,7 +232,7 @@ def normalize_transaction(
                 logger.warning(f"Error decoding TransferBatch in {tx_hash}: {e}")
                 continue
 
-            # Skip self-transfers (net change is 0)
+            # Пропуск переводов самому себе
             if from_a == wallet_lower and to_a == wallet_lower:
                 continue
 
@@ -311,9 +303,6 @@ class TransactionNormalizer:
         self.checkpoint_id = f"normalizer_{self.wallet.lower()}"
 
     async def process_range(self, from_block: int, to_block: int) -> int:
-        """
-        Processes all raw logs in [from_block, to_block] and inserts balance changes.
-        """
         rows = (
             await RawLog.filter(
                 block_number__gte=from_block,
@@ -337,7 +326,6 @@ class TransactionNormalizer:
         if not rows:
             return 0
 
-        # Group by transaction_hash
         tx_logs = defaultdict(list)
         for r in rows:
             tx_logs[r["transaction_hash"]].append(r)
@@ -353,9 +341,6 @@ class TransactionNormalizer:
         return 0
 
     async def process_all(self, chunk_blocks: int = 50000) -> int:
-        """
-        Processes all unprocessed blocks from normalizer checkpoint up to max(raw_logs.block_number).
-        """
         from .db import get_checkpoint, save_checkpoint
 
         conn = Tortoise.get_connection("default")

@@ -43,7 +43,6 @@ TOPIC_TO_NAME = {
 
 
 def to_hex_str(val: Any) -> str:
-    """Converts a bytes/HexBytes/string value into a 0x-prefixed hex string."""
     if val is None:
         return ""
     if hasattr(val, "hex"):
@@ -190,7 +189,6 @@ class BlockchainScanner:
         )
 
     def close(self) -> None:
-        """Shuts down the thread pool executor."""
         self._executor.shutdown(wait=False)
 
     def __enter__(self) -> Self:
@@ -200,7 +198,6 @@ class BlockchainScanner:
         self.close()
 
     def scan_range(self, from_block: int, to_block: int) -> list[dict[str, Any]]:
-        """Queries all 9 targeted event filters concurrently and deduplicates logs."""
         all_logs: dict[tuple[str, int], dict[str, Any]] = {}
 
         def fetch_query(item: tuple[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -228,10 +225,6 @@ class BlockchainScanner:
         target_block: int | None = None,
         max_chunks: int | None = None,
     ) -> int:
-        """
-        Runs the scanner starting from the last saved checkpoint up to target_block.
-        Returns the total number of newly inserted logs.
-        """
         latest_network_block = self.rpc.get_latest_block()
         if target_block is None or target_block > latest_network_block:
             target_block = latest_network_block
@@ -264,7 +257,6 @@ class BlockchainScanner:
 
             try:
                 t_chunk = time.time()
-                # Run sync thread pool query in executor to not block asyncio loop
                 logs = await asyncio.to_thread(
                     self.scan_range, current_start, chunk_end
                 )
@@ -320,10 +312,6 @@ class BlockchainScanner:
         return total_inserted
 
     async def run_live(self, poll_interval: float = 3.0) -> None:
-        """
-        Continuously polls for new Polygon blocks after catching up,
-        indexing each new block as it is produced.
-        """
         logger.info(
             f"Starting continuous live indexing for {self.wallet} (poll interval: {poll_interval}s)..."
         )

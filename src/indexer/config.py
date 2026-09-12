@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     @cached_property
     def wallet_topic(self) -> str:
-        # 32-byte 0-padded hex for topic matching
+        # 32-байтный hex для фильтрации по topic
         raw = self.checksum_wallet[2:].lower()
         return "0x" + raw.rjust(64, "0")
 

@@ -40,7 +40,6 @@ async def show_status() -> None:
         f"Checkpoint block:  {last_block:,} (lag: {latest_block - last_block:,} blocks)"
     )
 
-    # Raw logs
     raw_stats = await get_raw_logs_stats()
     logger.info(f"Stored raw logs:   {raw_stats['total_logs']:,}")
     if raw_stats["total_logs"] > 0:
@@ -51,7 +50,6 @@ async def show_status() -> None:
         for ev, cnt in raw_stats["by_event"].items():
             logger.info(f"  - {ev:20}: {cnt:,}")
 
-    # Normalized balance changes
     bc_stats = await get_balance_changes_stats()
     logger.info(f"Balance changes:   {bc_stats['total_changes']:,}")
     if bc_stats["total_changes"] > 0:
@@ -59,11 +57,9 @@ async def show_status() -> None:
         for op, cnt in bc_stats["by_operation"].items():
             logger.info(f"  - {op:20}: {cnt:,}")
 
-    # Active calculated positions
     active_count = await update_current_balances(settings.checksum_wallet)
     logger.info(f"Active positions:  {active_count:,} non-zero positions in database")
 
-    # On-chain ground truth
     pusd_raw = rpc_client.get_erc20_balance(PUSD, settings.checksum_wallet)
     usdc_raw = rpc_client.get_erc20_balance(USDC_E, settings.checksum_wallet)
     logger.info(f"On-chain pUSD:     {pusd_raw / 1e6:.6f} pUSD ({pusd_raw:,} raw)")
@@ -151,15 +147,12 @@ async def async_main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # Command: status
     subparsers.add_parser("status", help="Show current indexer status and balances")
 
-    # Command: normalize
     subparsers.add_parser(
         "normalize", help="Normalize raw logs into balance changes and ledger"
     )
 
-    # Command: verify
     verify_parser = subparsers.add_parser(
         "verify", help="Verify calculated balances against on-chain RPC balanceOf"
     )
@@ -177,7 +170,6 @@ async def async_main() -> None:
     )
     verify_parser.add_argument("--all", action="store_true", help="Check all positions")
 
-    # Command: scan
     scan_parser = subparsers.add_parser(
         "scan", help="Run historical on-chain event backfill"
     )
@@ -200,7 +192,6 @@ async def async_main() -> None:
         "--no-normalize", action="store_true", help="Do not run normalizer after scan"
     )
 
-    # Command: live
     live_parser = subparsers.add_parser(
         "live", help="Continuously index new blocks as they are produced"
     )
