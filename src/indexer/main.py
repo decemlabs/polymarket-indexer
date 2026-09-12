@@ -2,6 +2,8 @@ import argparse
 import asyncio
 import logging
 
+from web3 import Web3
+
 from .config import settings
 from .contracts import PUSD, USDC_E
 from .db import (
@@ -25,20 +27,31 @@ logging.basicConfig(
 logger = logging.getLogger("polymarket-indexer")
 
 
-async def show_status() -> None:
+def resolve_wallet(wallet_arg: str | None) -> str:
+    raw = wallet_arg or settings.wallet
+    if not Web3.is_address(raw):
+        raise ValueError(f"Invalid Ethereum address: {raw}")
+    return Web3.to_checksum_address(raw)
+
+
+async def show_status(wallet: str | None = None) -> None:
     await init_db()
+    target_wallet = resolve_wallet(wallet)
     latest_block = rpc_client.get_latest_block()
     active_rpc = rpc_client.current_node.url
-    checkpoint_id = f"wallet_{settings.checksum_wallet.lower()}"
-    last_block = await get_checkpoint(checkpoint_id, default=settings.start_block)
+    checkpoint_id = f"wallet_{target_wallet.lower()}"
+    last_block = await get_checkpoint(checkpoint_id, default=0)
 
     logger.info("=== Polymarket Indexer Status (Tortoise ORM) ===")
-    logger.info(f"Target wallet:     {settings.checksum_wallet}")
+    logger.info(f"Target wallet:     {target_wallet}")
     logger.info(f"Connected RPC:     {active_rpc}")
     logger.info(f"Latest block:      {latest_block:,}")
-    logger.info(
-        f"Checkpoint block:  {last_block:,} (lag: {latest_block - last_block:,} blocks)"
-    )
+    if last_block > 0:
+        logger.info(
+            f"Checkpoint block:  {last_block:,} (lag: {latest_block - last_block:,} blocks)"
+        )
+    else:
+        logger.info("Checkpoint block:  None (not scanned yet)")
 
     raw_stats = await get_raw_logs_stats()
     logger.info(f"Stored raw logs:   {raw_stats['total_logs']:,}")
@@ -57,61 +70,63 @@ async def show_status() -> None:
         for op, cnt in bc_stats["by_operation"].items():
             logger.info(f"  - {op:20}: {cnt:,}")
 
-    active_count = await update_current_balances(settings.checksum_wallet)
+    active_count = await update_current_balances(target_wallet)
     logger.info(f"Active positions:  {active_count:,} non-zero positions in database")
 
-    pusd_raw = rpc_client.get_erc20_balance(PUSD, settings.checksum_wallet)
-    usdc_raw = rpc_client.get_erc20_balance(USDC_E, settings.checksum_wallet)
+    pusd_raw = rpc_client.get_erc20_balance(PUSD, target_wallet)
+    usdc_raw = rpc_client.get_erc20_balance(USDC_E, target_wallet)
     logger.info(f"On-chain pUSD:     {pusd_raw / 1e6:.6f} pUSD ({pusd_raw:,} raw)")
     logger.info(f"On-chain USDC.e:   {usdc_raw / 1e6:.6f} USDC.e ({usdc_raw:,} raw)")
 
 
 async def run_scan(
+    wallet: str | None = None,
     from_block: int | None = None,
     to_block: int | None = None,
     chunks: int | None = None,
-    chunk_size: int | None = None,
     auto_normalize: bool = True,
 ) -> None:
     await init_db()
-    checkpoint_id = f"wallet_{settings.checksum_wallet.lower()}"
+    target_wallet = resolve_wallet(wallet)
+    checkpoint_id = f"wallet_{target_wallet.lower()}"
 
     if from_block is not None:
         await save_checkpoint(checkpoint_id, from_block - 1)
         logger.info(f"Overrode checkpoint to block {from_block - 1}")
 
-    scanner = BlockchainScanner(
-        initial_chunk_size=chunk_size or settings.chunk_size,
-    )
+    scanner = BlockchainScanner(wallet=target_wallet)
     await scanner.run(target_block=to_block, max_chunks=chunks)
 
     if auto_normalize:
         logger.info("Normalizing newly scanned transactions...")
-        normalizer = TransactionNormalizer()
+        normalizer = TransactionNormalizer(wallet=target_wallet)
         await normalizer.process_all()
-        await update_current_balances()
+        await update_current_balances(wallet=target_wallet)
 
 
-async def run_normalize() -> None:
+async def run_normalize(wallet: str | None = None) -> None:
     await init_db()
-    normalizer = TransactionNormalizer()
+    target_wallet = resolve_wallet(wallet)
+    normalizer = TransactionNormalizer(wallet=target_wallet)
     await normalizer.process_all()
-    await update_current_balances()
+    await update_current_balances(wallet=target_wallet)
 
 
 async def run_verify(
+    wallet: str | None = None,
     block: int | None = None,
     limit: int | None = 20,
     check_all: bool = False,
 ) -> None:
     await init_db()
-    checkpoint_id = f"wallet_{settings.checksum_wallet.lower()}"
-    verify_block = block or await get_checkpoint(
-        checkpoint_id, default=settings.start_block
-    )
+    target_wallet = resolve_wallet(wallet)
+    checkpoint_id = f"wallet_{target_wallet.lower()}"
+    verify_block = block or await get_checkpoint(checkpoint_id, default=0)
+    if verify_block == 0:
+        verify_block = rpc_client.get_latest_block()
 
     logger.info(f"Running On-Chain Verification against block {verify_block:,}...")
-    verifier = OnChainVerifier()
+    verifier = OnChainVerifier(wallet=target_wallet)
     report = await verifier.verify_at_block(
         block_identifier=verify_block,
         limit_positions=None if check_all else limit,
@@ -135,9 +150,10 @@ async def run_verify(
         )
 
 
-async def run_live(poll_interval: float = 3.0) -> None:
+async def run_live(wallet: str | None = None, poll_interval: float = 3.0) -> None:
     await init_db()
-    scanner = BlockchainScanner()
+    target_wallet = resolve_wallet(wallet)
+    scanner = BlockchainScanner(wallet=target_wallet)
     await scanner.run_live(poll_interval=poll_interval)
 
 
@@ -147,14 +163,25 @@ async def async_main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("status", help="Show current indexer status and balances")
+    status_parser = subparsers.add_parser(
+        "status", help="Show current indexer status and balances"
+    )
+    status_parser.add_argument(
+        "wallet", nargs="?", default=None, help="Target wallet address"
+    )
 
-    subparsers.add_parser(
+    norm_parser = subparsers.add_parser(
         "normalize", help="Normalize raw logs into balance changes and ledger"
+    )
+    norm_parser.add_argument(
+        "wallet", nargs="?", default=None, help="Target wallet address"
     )
 
     verify_parser = subparsers.add_parser(
         "verify", help="Verify calculated balances against on-chain RPC balanceOf"
+    )
+    verify_parser.add_argument(
+        "wallet", nargs="?", default=None, help="Target wallet address"
     )
     verify_parser.add_argument(
         "--block",
@@ -174,6 +201,9 @@ async def async_main() -> None:
         "scan", help="Run historical on-chain event backfill"
     )
     scan_parser.add_argument(
+        "wallet", nargs="?", default=None, help="Target wallet address"
+    )
+    scan_parser.add_argument(
         "--from-block", type=int, default=None, help="Starting block number"
     )
     scan_parser.add_argument(
@@ -183,12 +213,6 @@ async def async_main() -> None:
         "--chunks", type=int, default=None, help="Limit number of chunks to process"
     )
     scan_parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=settings.chunk_size,
-        help=f"Chunk size in blocks (default: {settings.chunk_size})",
-    )
-    scan_parser.add_argument(
         "--no-normalize", action="store_true", help="Do not run normalizer after scan"
     )
 
@@ -196,28 +220,39 @@ async def async_main() -> None:
         "live", help="Continuously index new blocks as they are produced"
     )
     live_parser.add_argument(
+        "wallet", nargs="?", default=None, help="Target wallet address"
+    )
+    live_parser.add_argument(
         "--interval", type=float, default=3.0, help="Poll interval in seconds"
     )
 
     args = parser.parse_args()
 
+    if hasattr(args, "wallet") and args.wallet and not Web3.is_address(args.wallet):
+        parser.error(f"Invalid Ethereum wallet address: {args.wallet}")
+
     try:
         if args.command == "status":
-            await show_status()
+            await show_status(wallet=args.wallet)
         elif args.command == "normalize":
-            await run_normalize()
+            await run_normalize(wallet=args.wallet)
         elif args.command == "verify":
-            await run_verify(block=args.block, limit=args.limit, check_all=args.all)
+            await run_verify(
+                wallet=args.wallet,
+                block=args.block,
+                limit=args.limit,
+                check_all=args.all,
+            )
         elif args.command == "scan":
             await run_scan(
+                wallet=args.wallet,
                 from_block=args.from_block,
                 to_block=args.to_block,
                 chunks=args.chunks,
-                chunk_size=args.chunk_size,
                 auto_normalize=not args.no_normalize,
             )
         elif args.command == "live":
-            await run_live(poll_interval=args.interval)
+            await run_live(wallet=args.wallet, poll_interval=args.interval)
         else:
             await show_status()
     finally:

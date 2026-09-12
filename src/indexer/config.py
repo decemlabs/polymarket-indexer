@@ -8,8 +8,7 @@ from web3 import Web3
 class Settings(BaseSettings):
     database_url: str = "sqlite://polymarket.db"
     wallet: str = "0x46b353667fd7d846af3bbeda6584b0e5b883d3de"
-    start_block: int = 80813420
-    chunk_size: int = 50000
+    start_block: int | None = None
     polygon_rpc_urls: str = (
         "https://polygon.gateway.tenderly.co,"
         "https://gateway.tenderly.co/public/polygon,"

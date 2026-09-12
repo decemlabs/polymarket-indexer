@@ -6,7 +6,7 @@ from typing import Any, cast
 from web3 import Web3
 from web3.exceptions import Web3Exception, Web3RPCError
 from web3.middleware import ExtraDataToPOAMiddleware
-from web3.types import FilterParams
+from web3.types import BlockIdentifier, FilterParams
 
 from .config import settings
 from .contracts import ERC20_BALANCE_OF_ABI, ERC1155_BALANCE_OF_ABI
@@ -74,6 +74,52 @@ class MultiRpcClient:
                 logger.warning(f"Failed to get block number from {node.url}: {e}")
                 self.rotate_node()
         raise RuntimeError("All RPC nodes failed to fetch latest block number")
+
+    def get_transaction_count(
+        self, wallet: str, block_identifier: BlockIdentifier = "latest"
+    ) -> int:
+        checksum_wallet = Web3.to_checksum_address(wallet)
+        for _ in range(len(self.nodes)):
+            node = self.current_node
+            try:
+                cnt = node.w3.eth.get_transaction_count(
+                    checksum_wallet, block_identifier=block_identifier
+                )
+                node.record_success()
+                return int(cnt)
+            except (Web3Exception, OSError, ValueError) as e:
+                logger.warning(
+                    f"Error calling get_transaction_count on {node.url}: {e}"
+                )
+                self.rotate_node()
+        raise RuntimeError(
+            f"All RPC nodes failed calling get_transaction_count for {wallet}"
+        )
+
+    def find_first_wallet_block(
+        self,
+        wallet: str,
+        min_block: int = 40_000_000,
+        buffer_blocks: int = 5_000,
+    ) -> int:
+        latest = self.get_latest_block()
+        if self.get_transaction_count(wallet, "latest") == 0:
+            return min_block
+
+        if self.get_transaction_count(wallet, min_block) > 0:
+            return min_block
+
+        low = min_block
+        high = latest
+        while low < high:
+            mid = (low + high) // 2
+            cnt = self.get_transaction_count(wallet, mid)
+            if cnt == 0:
+                low = mid + 1
+            else:
+                high = mid
+
+        return max(min_block, low - buffer_blocks)
 
     def get_logs(
         self,

@@ -167,20 +167,25 @@ def build_queries(wallet_topic: str) -> list[tuple[str, dict[str, Any]]]:
     ]
 
 
+DEFAULT_CHUNK_SIZE = 50_000
+FALLBACK_START_BLOCK = 40_000_000
+
+
 class BlockchainScanner:
     def __init__(
         self,
         rpc: MultiRpcClient | None = None,
         wallet: str | None = None,
-        initial_chunk_size: int | None = None,
+        initial_chunk_size: int = DEFAULT_CHUNK_SIZE,
         min_chunk_size: int = 500,
-        max_chunk_size: int = 200000,
+        max_chunk_size: int = 200_000,
     ):
         self.rpc = rpc or rpc_client
         self.wallet = Web3.to_checksum_address(wallet or settings.checksum_wallet)
-        self.wallet_topic = settings.wallet_topic
+        raw = self.wallet[2:].lower()
+        self.wallet_topic = "0x" + raw.rjust(64, "0")
         self.checkpoint_id = f"wallet_{self.wallet.lower()}"
-        self.chunk_size = initial_chunk_size or settings.chunk_size
+        self.chunk_size = initial_chunk_size
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
         self.queries = build_queries(self.wallet_topic)
@@ -220,6 +225,21 @@ class BlockchainScanner:
             key=lambda x: (x["block_number"], x["log_index"]),
         )
 
+    async def get_start_block(self) -> int:
+        saved = await get_checkpoint(self.checkpoint_id, default=0)
+        if saved > 0:
+            return saved
+
+        if settings.start_block is not None and settings.start_block > 0:
+            return settings.start_block
+
+        logger.info(f"Auto-detecting first active block for {self.wallet}...")
+        first_block = await asyncio.to_thread(
+            self.rpc.find_first_wallet_block, self.wallet, FALLBACK_START_BLOCK
+        )
+        logger.info(f"Start block for {self.wallet}: {first_block:,}")
+        return first_block
+
     async def run(
         self,
         target_block: int | None = None,
@@ -229,19 +249,15 @@ class BlockchainScanner:
         if target_block is None or target_block > latest_network_block:
             target_block = latest_network_block
 
-        last_checkpoint = await get_checkpoint(
-            self.checkpoint_id, default=settings.start_block
-        )
-        current_start = (
-            last_checkpoint
-            if last_checkpoint == settings.start_block
-            else last_checkpoint + 1
-        )
+        start_block = await self.get_start_block()
+        saved_checkpoint = await get_checkpoint(self.checkpoint_id, default=0)
+        current_start = saved_checkpoint + 1 if saved_checkpoint > 0 else start_block
+        initial_start = current_start
 
         total_to_scan = max(0, target_block - current_start + 1)
         logger.info(
-            f"Starting scan for {self.wallet} from block {current_start} to {target_block} "
-            f"({total_to_scan:,} blocks remaining, initial chunk_size={self.chunk_size})"
+            f"Starting scan for {self.wallet} from block {current_start:,} to {target_block:,} "
+            f"({total_to_scan:,} blocks remaining, initial chunk_size={self.chunk_size:,})"
         )
 
         total_inserted = 0
@@ -268,7 +284,7 @@ class BlockchainScanner:
                 dt_chunk = time.time() - t_chunk
 
                 progress_pct = (
-                    (chunk_end - last_checkpoint) / total_to_scan * 100
+                    (chunk_end - initial_start + 1) / total_to_scan * 100
                     if total_to_scan > 0
                     else 100.0
                 )
@@ -303,7 +319,7 @@ class BlockchainScanner:
                 await asyncio.sleep(2.0)
 
         elapsed = time.time() - t0
-        blocks_done = current_start - (last_checkpoint + 1)
+        blocks_done = current_start - initial_start
         speed = blocks_done / elapsed if elapsed > 0 else 0
         logger.info(
             f"Scanner finished: processed {chunks_processed} chunks ({blocks_done:,} blocks) in {elapsed:.1f}s "
@@ -318,8 +334,9 @@ class BlockchainScanner:
         while True:
             try:
                 latest = self.rpc.get_latest_block()
+                start_block = await self.get_start_block()
                 last_checkpoint = await get_checkpoint(
-                    self.checkpoint_id, default=settings.start_block
+                    self.checkpoint_id, default=start_block
                 )
                 if latest > last_checkpoint:
                     inserted = await self.run(target_block=latest)

@@ -10,36 +10,37 @@
 # 1. Установка зависимостей
 uv sync
 
-# 2. Настройка (опционально)
+# 2. Настройка кошелька по умолчанию (опционально)
 cp .env.example .env
 ```
 
 Параметры в `.env`:
-- `WALLET` — адрес целевого кошелька
+- `WALLET` — адрес целевого кошелька по умолчанию
 - `DATABASE_URL` — строка подключения к БД (по умолчанию `sqlite://polymarket.db`)
-- `START_BLOCK` — начальный блок сканирования (по умолчанию `80813420`)
-- `CHUNK_SIZE` — размер диапазона блоков на запрос (по умолчанию `50000`)
 - `POLYGON_RPC_URLS` — список RPC-нод через запятую
+
+> **Входные данные — только адрес кошелька.**
+> Начальный блок активности кошелька определяется автоматически за ~2 секунды через RPC, а размер пачки блоков (`chunk size`) динамически адаптируется под лимиты нод.
 
 ---
 
 ## Команды CLI
 
-Запуск через `uv run polymarket-indexer <команда>` (или `uv run python -m src.indexer.main <команда>`):
+Адрес кошелька можно передавать напрямую в любую команду: `uv run polymarket-indexer <команда> [АДРЕС]` (если не передан — берется из `.env`):
 
 | Команда | Описание | Пример |
 |---|---|---|
-| `status` | Текущий прогресс, статистика логов и он-чейн балансы | `uv run polymarket-indexer status` |
-| `scan` | Сканирование событий из сети Polygon | `uv run polymarket-indexer scan --chunks 10` |
-| `normalize` | Обработка логов в проводки и пересчет балансов | `uv run polymarket-indexer normalize` |
-| `verify` | Сверка рассчитанных балансов с нодой (`balanceOf`) | `uv run polymarket-indexer verify --all` |
-| `live` | Фоновая синхронизация новых блоков в реальном времени | `uv run polymarket-indexer live --interval 3.0` |
+| `status [АДРЕС]` | Статистика логов, рассчитанные и он-чейн балансы | `uv run polymarket-indexer status 0x46B3...` |
+| `scan [АДРЕС]` | Сканирование он-чейн событий с авто-нормализацией | `uv run polymarket-indexer scan 0x46B3...` |
+| `normalize [АДРЕС]` | Обработка логов в проводки и пересчет балансов | `uv run polymarket-indexer normalize` |
+| `verify [АДРЕС]` | Сверка рассчитанных балансов с нодой (`balanceOf`) | `uv run polymarket-indexer verify --all` |
+| `live [АДРЕС]` | Фоновая синхронизация новых блоков в реальном времени | `uv run polymarket-indexer live --interval 3.0` |
 
-### Примеры сканирования:
+### Примеры:
 ```bash
-# Сканирование с авто-нормализацией до актуального блока сети
-uv run polymarket-indexer scan
+# Сканирование произвольного кошелька (начальный блок определится автоматически):
+uv run polymarket-indexer scan 0x46B353667FD7d846AF3BbEdA6584B0E5B883d3De
 
-# Сканирование конкретного диапазона блоков
-uv run polymarket-indexer scan --from-block 80813420 --to-block 80900000
+# Просмотр статуса и балансов кошелька из .env:
+uv run polymarket-indexer status
 ```

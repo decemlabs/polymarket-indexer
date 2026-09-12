@@ -349,14 +349,12 @@ class TransactionNormalizer:
             logger.info("No raw logs found to normalize.")
             return 0
 
-        last_checkpoint = await get_checkpoint(
-            self.checkpoint_id, default=settings.start_block
-        )
-        current_start = (
-            last_checkpoint
-            if last_checkpoint == settings.start_block
-            else last_checkpoint + 1
-        )
+        saved_checkpoint = await get_checkpoint(self.checkpoint_id, default=0)
+        if saved_checkpoint > 0:
+            current_start = saved_checkpoint + 1
+        else:
+            first_raw = await RawLog.all().order_by("block_number").first()
+            current_start = first_raw.block_number if first_raw else 0
 
         if current_start > max_raw_block:
             logger.info("All transactions are already normalized up to date.")
