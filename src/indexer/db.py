@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 from decimal import Decimal
 from typing import Any
@@ -19,6 +21,36 @@ def get_tortoise_db_url(raw_url: str | None = None) -> str:
     return url
 
 
+class CheckpointTracker:
+    """Tracks completed block ranges and updates the database checkpoint contiguously (gap-free)."""
+
+    def __init__(self, initial_checkpoint: int, checkpoint_id: str):
+        self.checkpoint_id = checkpoint_id
+        self.last_saved_checkpoint = initial_checkpoint
+        self.completed_ranges: list[tuple[int, int]] = []
+        self._lock = asyncio.Lock()
+
+    async def mark_completed(self, from_b: int, to_b: int) -> int | None:
+        async with self._lock:
+            self.completed_ranges.append((from_b, to_b))
+            self.completed_ranges.sort()
+
+            new_checkpoint = self.last_saved_checkpoint
+            remaining: list[tuple[int, int]] = []
+            for start, end in self.completed_ranges:
+                if start <= new_checkpoint + 1:
+                    new_checkpoint = max(new_checkpoint, end)
+                else:
+                    remaining.append((start, end))
+            self.completed_ranges = remaining
+
+            if new_checkpoint > self.last_saved_checkpoint:
+                self.last_saved_checkpoint = new_checkpoint
+                await save_checkpoint(self.checkpoint_id, new_checkpoint)
+                return new_checkpoint
+            return None
+
+
 async def _migrate_sqlite_schema(conn: Any) -> None:
     cols = await conn.execute_query_dict("PRAGMA table_info(balance_changes);")
     col_names = {c["name"] for c in cols}
@@ -28,24 +60,27 @@ async def _migrate_sqlite_schema(conn: Any) -> None:
             "ALTER TABLE balance_changes ADD COLUMN wallet VARCHAR(42);"
         )
 
-    # Миграция token_id из старой научной нотации в обычные строки
-    legacy_e_row = await BalanceChange.filter(token_id__icontains="e").first()
-    if legacy_e_row:
-        all_e_rows = await BalanceChange.filter(token_id__icontains="e").values(
-            "id", "token_id"
-        )
-        logger.info(
-            f"Found {len(all_e_rows):,} legacy scientific token_ids. Canonicalizing to exact decimal strings..."
-        )
-        updates = [[str(int(Decimal(r["token_id"]))), r["id"]] for r in all_e_rows]
-        await conn.execute_many(
-            "UPDATE balance_changes SET token_id = ? WHERE id = ?;", updates
-        )
-        logger.info(
-            f"Successfully canonicalized {len(updates):,} token_ids in balance_changes."
-        )
+    # Миграция token_id из старой научной нотации в обычные строки (только один раз)
+    migrated = await Checkpoint.filter(id="migration_token_id_canonical").first()
+    if not migrated:
+        legacy_e_row = await BalanceChange.filter(token_id__icontains="e").first()
+        if legacy_e_row:
+            all_e_rows = await BalanceChange.filter(token_id__icontains="e").values(
+                "id", "token_id"
+            )
+            logger.info(
+                f"Found {len(all_e_rows):,} legacy scientific token_ids. Canonicalizing to exact decimal strings..."
+            )
+            updates = [[str(int(Decimal(r["token_id"]))), r["id"]] for r in all_e_rows]
+            await conn.execute_many(
+                "UPDATE balance_changes SET token_id = ? WHERE id = ?;", updates
+            )
+            logger.info(
+                f"Successfully canonicalized {len(updates):,} token_ids in balance_changes."
+            )
 
-    await CurrentBalance.filter(token_id__icontains="e").delete()
+        await CurrentBalance.filter(token_id__icontains="e").delete()
+        await Checkpoint.create(id="migration_token_id_canonical", last_scanned_block=1)
 
 
 async def init_db() -> None:
@@ -91,12 +126,41 @@ async def insert_raw_logs(logs: list[dict[str, Any]]) -> int:
     if not logs:
         return 0
 
-    model_instances = [RawLog(**l) for l in logs]
-    await RawLog.bulk_create(
-        model_instances,
-        ignore_conflicts=True,
-        batch_size=1000,
-    )
+    conn = Tortoise.get_connection("default")
+    if conn.capabilities.dialect == "sqlite":
+        tuples: list[list[Any]] = [
+            [
+                l["block_number"],
+                l["block_hash"],
+                l["transaction_hash"],
+                l["transaction_index"],
+                l["log_index"],
+                l["contract_address"],
+                l.get("event_name"),
+                l.get("topic0"),
+                l.get("topic1"),
+                l.get("topic2"),
+                l.get("topic3"),
+                l.get("data", ""),
+            ]
+            for l in logs
+        ]
+        await conn.execute_many(
+            """
+            INSERT OR IGNORE INTO raw_logs
+            (block_number, block_hash, transaction_hash, transaction_index, log_index,
+             contract_address, event_name, topic0, topic1, topic2, topic3, data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            tuples,
+        )
+    else:
+        model_instances = [RawLog(**l) for l in logs]
+        await RawLog.bulk_create(
+            model_instances,
+            ignore_conflicts=True,
+            batch_size=2000,
+        )
     return len(logs)
 
 
@@ -140,12 +204,40 @@ async def insert_balance_changes(changes: list[dict[str, Any]]) -> int:
     if not changes:
         return 0
 
-    model_instances = [BalanceChange(**c) for c in changes]
-    await BalanceChange.bulk_create(
-        model_instances,
-        ignore_conflicts=True,
-        batch_size=1000,
-    )
+    conn = Tortoise.get_connection("default")
+    if conn.capabilities.dialect == "sqlite":
+        tuples: list[list[Any]] = [
+            [
+                c.get("wallet"),
+                c["block_number"],
+                c["transaction_hash"],
+                c["log_index"],
+                c["operation_type"],
+                c["token_type"],
+                c["token_address"],
+                str(c["token_id"]),
+                str(c["amount_delta"]),
+                c.get("counterparty"),
+                json.dumps(c.get("details", {})),
+            ]
+            for c in changes
+        ]
+        await conn.execute_many(
+            """
+            INSERT OR IGNORE INTO balance_changes
+            (wallet, block_number, transaction_hash, log_index, operation_type,
+             token_type, token_address, token_id, amount_delta, counterparty, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            tuples,
+        )
+    else:
+        model_instances = [BalanceChange(**c) for c in changes]
+        await BalanceChange.bulk_create(
+            model_instances,
+            ignore_conflicts=True,
+            batch_size=2000,
+        )
     return len(changes)
 
 

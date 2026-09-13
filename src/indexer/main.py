@@ -84,6 +84,8 @@ async def run_scan(
     from_block: int | None = None,
     to_block: int | None = None,
     chunks: int | None = None,
+    concurrency: int | None = None,
+    chunk_size: int | None = None,
     auto_normalize: bool = True,
 ) -> None:
     await init_db()
@@ -94,20 +96,35 @@ async def run_scan(
         await save_checkpoint(checkpoint_id, from_block - 1)
         logger.info(f"Overrode checkpoint to block {from_block - 1}")
 
-    scanner = BlockchainScanner(wallet=target_wallet)
+    scanner = BlockchainScanner(
+        wallet=target_wallet,
+        concurrency=concurrency,
+        initial_chunk_size=chunk_size,
+    )
     await scanner.run(target_block=to_block, max_chunks=chunks)
 
     if auto_normalize:
         logger.info("Normalizing newly scanned transactions...")
-        normalizer = TransactionNormalizer(wallet=target_wallet)
+        normalizer = TransactionNormalizer(
+            wallet=target_wallet,
+            concurrency=concurrency,
+        )
         await normalizer.process_all()
         await update_current_balances(wallet=target_wallet)
 
 
-async def run_normalize(wallet: str | None = None) -> None:
+async def run_normalize(
+    wallet: str | None = None,
+    concurrency: int | None = None,
+    chunk_size: int | None = None,
+) -> None:
     await init_db()
     target_wallet = resolve_wallet(wallet)
-    normalizer = TransactionNormalizer(wallet=target_wallet)
+    normalizer = TransactionNormalizer(
+        wallet=target_wallet,
+        concurrency=concurrency,
+        chunk_size=chunk_size,
+    )
     await normalizer.process_all()
     await update_current_balances(wallet=target_wallet)
 
@@ -176,6 +193,19 @@ async def async_main() -> None:
     norm_parser.add_argument(
         "wallet", nargs="?", default=None, help="Target wallet address"
     )
+    norm_parser.add_argument(
+        "--concurrency",
+        "-c",
+        type=int,
+        default=None,
+        help="Number of concurrent normalizer workers (default: 4)",
+    )
+    norm_parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="Block range per chunk (default: 50,000)",
+    )
 
     verify_parser = subparsers.add_parser(
         "verify", help="Verify calculated balances against on-chain RPC balanceOf"
@@ -213,6 +243,19 @@ async def async_main() -> None:
         "--chunks", type=int, default=None, help="Limit number of chunks to process"
     )
     scan_parser.add_argument(
+        "--concurrency",
+        "-c",
+        type=int,
+        default=None,
+        help="Number of concurrent chunk workers (default: 4)",
+    )
+    scan_parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="Block range per chunk (default: 25,000)",
+    )
+    scan_parser.add_argument(
         "--no-normalize", action="store_true", help="Do not run normalizer after scan"
     )
 
@@ -235,7 +278,11 @@ async def async_main() -> None:
         if args.command == "status":
             await show_status(wallet=args.wallet)
         elif args.command == "normalize":
-            await run_normalize(wallet=args.wallet)
+            await run_normalize(
+                wallet=args.wallet,
+                concurrency=args.concurrency,
+                chunk_size=args.chunk_size,
+            )
         elif args.command == "verify":
             await run_verify(
                 wallet=args.wallet,
@@ -249,6 +296,8 @@ async def async_main() -> None:
                 from_block=args.from_block,
                 to_block=args.to_block,
                 chunks=args.chunks,
+                concurrency=args.concurrency,
+                chunk_size=args.chunk_size,
                 auto_normalize=not args.no_normalize,
             )
         elif args.command == "live":
