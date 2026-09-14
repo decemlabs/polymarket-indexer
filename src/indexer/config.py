@@ -10,14 +10,23 @@ class Settings(BaseSettings):
     wallet: str = "0x46b353667fd7d846af3bbeda6584b0e5b883d3de"
     start_block: int | None = None
     polygon_rpc_urls: str = (
-        "https://polygon.gateway.tenderly.co,https://gateway.tenderly.co/public/polygon"
+        "https://polygon.gateway.tenderly.co,"
+        "https://gateway.tenderly.co/public/polygon,"
+        "https://polygon.drpc.org,"
+        "https://rpc-mainnet.matic.quiknode.pro,"
+        "https://matic.rpc.sentio.xyz,"
+        "https://polygon-bor-rpc.publicnode.com,"
+        "https://polygon.publicnode.com,"
+        "https://polygon-bor.publicnode.com,"
+        "https://rpc.private.mev-x.com/polygon,"
+        "https://1rpc.io/matic"
     )
     polygon_rpc_url: str | None = None
-    scanner_concurrency: int = 2
-    chunk_size: int = 15_000
-    max_chunk_size: int = 25_000
-    normalizer_concurrency: int = 4
-    normalizer_chunk_size: int = 50_000
+    scanner_concurrency: int = 8
+    chunk_size: int = 25_000
+    max_chunk_size: int = 50_000
+    normalizer_concurrency: int = 8
+    normalizer_chunk_size: int = 100_000
 
     model_config = SettingsConfigDict(
         env_file=".env",

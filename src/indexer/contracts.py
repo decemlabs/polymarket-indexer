@@ -98,5 +98,15 @@ ERC1155_BALANCE_OF_ABI = [
         "name": "balanceOf",
         "outputs": [{"name": "balance", "type": "uint256"}],
         "type": "function",
-    }
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "_owners", "type": "address[]"},
+            {"name": "_ids", "type": "uint256[]"},
+        ],
+        "name": "balanceOfBatch",
+        "outputs": [{"name": "", "type": "uint256[]"}],
+        "type": "function",
+    },
 ]

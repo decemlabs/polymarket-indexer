@@ -28,7 +28,7 @@ async def update_current_balances(wallet: str | None = None) -> int:
                 PRINTF('%.0f', SUM(amount_delta)) as balance,
                 CURRENT_TIMESTAMP
             FROM balance_changes
-            WHERE wallet = ? OR wallet IS NULL
+            WHERE wallet = ?
             GROUP BY token_type, token_address, token_id
             ON CONFLICT (wallet, token_address, token_id)
             DO UPDATE SET
@@ -43,7 +43,7 @@ async def update_current_balances(wallet: str | None = None) -> int:
             """
             DELETE FROM current_balances
             WHERE wallet = ?
-              AND (balance = '0' OR balance = '0.0' OR CAST(balance AS REAL) <= 0);
+              AND (balance = '0' OR balance = '0.0' OR CAST(balance AS REAL) = 0);
             """,
             [target_wallet],
         )
@@ -60,7 +60,7 @@ async def update_current_balances(wallet: str | None = None) -> int:
                 SUM(amount_delta)::numeric(78, 0) as balance,
                 NOW()
             FROM balance_changes
-            WHERE wallet = $1 OR wallet IS NULL
+            WHERE wallet = $1
             GROUP BY token_type, token_address, token_id
             ON CONFLICT (wallet, token_address, token_id)
             DO UPDATE SET
@@ -72,27 +72,51 @@ async def update_current_balances(wallet: str | None = None) -> int:
         )
 
         await conn.execute_query(
-            "DELETE FROM current_balances WHERE wallet = $1 AND balance <= 0;",
+            "DELETE FROM current_balances WHERE wallet = $1 AND balance = 0;",
             [target_wallet],
         )
 
-    active_count = await CurrentBalance.filter(
+    pos_count = await CurrentBalance.filter(
         wallet=target_wallet, balance__gt=0
     ).count()
+    neg_count = await CurrentBalance.filter(
+        wallet=target_wallet, balance__lt=0
+    ).count()
+
+    if neg_count > 0:
+        logger.error(
+            f"CRITICAL: Found {neg_count:,} NEGATIVE balance positions for {target_wallet}! "
+            "Ledger invariant violated (local calculation contains missing or corrupted events)."
+        )
 
     logger.info(
-        f"Replay complete for {target_wallet}: {active_count:,} active non-zero positions."
+        f"Replay complete for {target_wallet}: {pos_count:,} active positions"
+        + (f", {neg_count:,} NEGATIVE positions." if neg_count > 0 else ".")
     )
-    return int(active_count)
+    return int(pos_count)
 
 
-async def get_current_balances(wallet: str | None = None) -> list[dict[str, Any]]:
+async def get_current_balances(
+    wallet: str | None = None,
+    include_zero: bool = False,
+) -> list[dict[str, Any]]:
     target_wallet = Web3.to_checksum_address(wallet or settings.checksum_wallet)
     positions = await CurrentBalance.filter(
         wallet=target_wallet,
-        balance__gt=0,
     ).values("token_type", "token_address", "token_id", "balance", "updated_at")
+
+    if not include_zero:
+        positions = [
+            p for p in positions if Decimal(str(p["balance"])) != Decimal(0)
+        ]
+
+    # Negative balances are critical anomalies and must be sorted to the very top,
+    # followed by ERC-20, then ERC-1155 sorted by absolute balance descending.
     positions.sort(
-        key=lambda x: (x["token_type"], -Decimal(str(x["balance"]))),
+        key=lambda x: (
+            0 if Decimal(str(x["balance"])) < 0 else 1,
+            0 if x["token_type"] == "ERC20" else 1,
+            -abs(Decimal(str(x["balance"]))),
+        ),
     )
     return positions

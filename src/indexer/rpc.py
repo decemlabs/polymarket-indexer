@@ -17,12 +17,20 @@ from .contracts import ERC20_BALANCE_OF_ABI, ERC1155_BALANCE_OF_ABI
 logger = logging.getLogger(__name__)
 
 
+KNOWN_ARCHIVE_DOMAINS = {
+    "tenderly.co",
+    "drpc.org",
+    "quiknode.pro",
+    "sentio.xyz",
+}
+
+
 class RangeLimitError(Exception):
     pass
 
 
 class RpcNode:
-    def __init__(self, url: str, max_concurrent: int = 3):
+    def __init__(self, url: str, max_concurrent: int = 8):
         self.url = url
         session = requests.Session()
         adapter = HTTPAdapter(
@@ -33,7 +41,7 @@ class RpcNode:
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         self.w3 = Web3(
-            Web3.HTTPProvider(url, session=session, request_kwargs={"timeout": 15})
+            Web3.HTTPProvider(url, session=session, request_kwargs={"timeout": 12})
         )
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.failure_count = 0
@@ -42,7 +50,7 @@ class RpcNode:
         self.max_concurrent = max_concurrent
         self.total_requests = 0
         self.total_errors = 0
-        self.is_archive = True
+        self.is_archive = any(domain in url for domain in KNOWN_ARCHIVE_DOMAINS)
         self.disabled = False
 
     def is_healthy(self, cooloff_seconds: float = 2.0) -> bool:
@@ -55,14 +63,17 @@ class RpcNode:
     def record_success(self) -> None:
         self.failure_count = 0
 
-    def record_failure(self) -> None:
+    def record_failure(self, is_archive_error: bool = False) -> None:
+        if is_archive_error:
+            self.is_archive = False
+            return
         self.failure_count += 1
         self.total_errors += 1
         self.last_failed_at = time.time()
 
 
 class MultiRpcClient:
-    def __init__(self, urls: list[str] | None = None, max_concurrent_per_node: int = 3):
+    def __init__(self, urls: list[str] | None = None, max_concurrent_per_node: int = 8):
         if not urls:
             urls = settings.rpc_urls
         self.nodes = [
@@ -71,29 +82,41 @@ class MultiRpcClient:
         self._current_index = 0
         self._cond = threading.Condition()
 
-    def acquire_node(self, exclude_urls: set[str] | None = None) -> RpcNode:
+    def acquire_node(
+        self,
+        exclude_urls: set[str] | None = None,
+        require_archive: bool = False,
+    ) -> RpcNode:
         """Acquires the least-loaded healthy node. Blocks if all nodes are at max capacity."""
         with self._cond:
             while True:
+                base_pool = [
+                    n for n in self.nodes
+                    if not n.disabled and (not require_archive or n.is_archive)
+                ]
+                if not base_pool:
+                    if require_archive:
+                        base_pool = [n for n in self.nodes if not n.disabled]
+                    if not base_pool:
+                        raise RuntimeError("All RPC nodes are permanently disabled!")
+
                 # 1. First priority: enabled, healthy nodes not yet tried in this attempt
                 candidates = [
                     n
-                    for n in self.nodes
-                    if not n.disabled
-                    and n.is_healthy()
+                    for n in base_pool
+                    if n.is_healthy()
                     and (exclude_urls is None or n.url not in exclude_urls)
                 ]
                 # 2. Second priority: any enabled node not yet tried
                 if not candidates:
                     candidates = [
                         n
-                        for n in self.nodes
-                        if not n.disabled
-                        and (exclude_urls is None or n.url not in exclude_urls)
+                        for n in base_pool
+                        if (exclude_urls is None or n.url not in exclude_urls)
                     ]
                 # 3. Third priority: all non-disabled nodes
                 if not candidates:
-                    candidates = [n for n in self.nodes if not n.disabled]
+                    candidates = base_pool
                 if not candidates:
                     raise RuntimeError("All RPC nodes are permanently disabled!")
 
@@ -197,7 +220,7 @@ class MultiRpcClient:
         self,
         wallet: str,
         min_block: int = 40_000_000,
-        buffer_blocks: int = 5_000,
+        buffer_blocks: int = 50_000,
     ) -> int:
         latest = self.get_latest_block()
         if self.get_transaction_count(wallet, "latest") == 0:

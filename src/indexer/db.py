@@ -182,20 +182,13 @@ async def get_raw_logs_stats() -> dict[str, Any]:
         .order_by("-cnt")
         .values("event_name", "cnt")
     )
-    contracts = (
-        await RawLog.all()
-        .annotate(cnt=Count("id"))
-        .group_by("contract_address")
-        .order_by("-cnt")
-        .values("contract_address", "cnt")
-    )
 
     stats: dict[str, Any] = {
         "total_logs": agg[0]["total"] if agg and agg[0] else 0,
         "min_block": agg[0]["min_b"] if agg and agg[0] else None,
         "max_block": agg[0]["max_b"] if agg and agg[0] else None,
         "by_event": {r["event_name"]: r["cnt"] for r in events},
-        "by_contract": {r["contract_address"]: r["cnt"] for r in contracts},
+        "by_contract": {},
     }
     return stats
 
@@ -250,16 +243,9 @@ async def get_balance_changes_stats() -> dict[str, Any]:
         .order_by("-cnt")
         .values("operation_type", "cnt")
     )
-    tokens = (
-        await BalanceChange.all()
-        .annotate(cnt=Count("id"))
-        .group_by("token_type")
-        .order_by("-cnt")
-        .values("token_type", "cnt")
-    )
 
     return {
         "total_changes": total,
         "by_operation": {r["operation_type"]: r["cnt"] for r in ops},
-        "by_token_type": {r["token_type"]: r["cnt"] for r in tokens},
+        "by_token_type": {},
     }

@@ -15,6 +15,7 @@ from .db import (
     save_checkpoint,
 )
 from .ledger import update_current_balances
+from .models import CurrentBalance
 from .normalizer import TransactionNormalizer
 from .rpc import rpc_client
 from .scanner import BlockchainScanner
@@ -70,8 +71,17 @@ async def show_status(wallet: str | None = None) -> None:
         for op, cnt in bc_stats["by_operation"].items():
             logger.info(f"  - {op:20}: {cnt:,}")
 
-    active_count = await update_current_balances(target_wallet)
-    logger.info(f"Active positions:  {active_count:,} non-zero positions in database")
+    active_count = await CurrentBalance.filter(wallet=target_wallet, balance__gt=0).count()
+    neg_count = await CurrentBalance.filter(wallet=target_wallet, balance__lt=0).count()
+    if active_count == 0 and neg_count == 0:
+        active_count = await update_current_balances(target_wallet)
+        neg_count = await CurrentBalance.filter(wallet=target_wallet, balance__lt=0).count()
+
+    logger.info(f"Active positions:  {active_count:,} positive positions in database")
+    if neg_count > 0:
+        logger.error(
+            f"Negative positions:{neg_count:,} (CRITICAL: ledger invariant violated! Missing or corrupted events)"
+        )
 
     pusd_raw = rpc_client.get_erc20_balance(PUSD, target_wallet)
     usdc_raw = rpc_client.get_erc20_balance(USDC_E, target_wallet)
@@ -132,7 +142,7 @@ async def run_normalize(
 async def run_verify(
     wallet: str | None = None,
     block: int | None = None,
-    limit: int | None = 20,
+    limit: int | None = None,
     check_all: bool = False,
 ) -> None:
     await init_db()
@@ -142,29 +152,71 @@ async def run_verify(
     if verify_block == 0:
         verify_block = rpc_client.get_latest_block()
 
-    logger.info(f"Running On-Chain Verification against block {verify_block:,}...")
+    limit_to_use = None if check_all else limit
+    mode_descr = "ALL positions" if limit_to_use is None else f"sample of top {limit_to_use} positions"
+    logger.info(f"Running On-Chain Verification for {target_wallet} against block {verify_block:,} ({mode_descr})...")
+
     verifier = OnChainVerifier(wallet=target_wallet)
     report = await verifier.verify_at_block(
         block_identifier=verify_block,
-        limit_positions=None if check_all else limit,
+        limit_positions=limit_to_use,
     )
 
-    logger.info(f"=== Verification Report (Block {verify_block:,}) ===")
-    logger.info(
-        f"Checked: {report['checked_count']} | "
-        f"Matched: {report['matched_count']} | "
-        f"Mismatches: {report['mismatch_count']} | "
-        f"All Matched: {report['all_matched']}"
+    mode_str = (
+        f"PARTIAL SAMPLE ({report['checked_count']:,}/{report['total_wallet_positions']:,})"
+        if report["is_partial"]
+        else "FULL WALLET"
     )
+    logger.info(f"=== Verification Report (Block {verify_block:,}) [{mode_str}] ===")
+    logger.info(f"Target wallet:       {target_wallet}")
+    logger.info(f"Total in Database:   {report['total_wallet_positions']:,}")
+    logger.info(f"Positions Checked:   {report['checked_count']:,}")
+    logger.info(f"Matched:             {report['matched_count']:,}")
+    logger.info(f"Mismatches:          {report['mismatch_count']:,}")
+    logger.info(f"Negative Balances:   {report['negative_count']:,}")
+    logger.info(f"Status:              {report['status']}")
+    logger.info(f"All Matched:         {report['all_matched']}")
 
-    for r in report["results"]:
-        status = "OK" if r["match"] else "FAIL"
-        diff_str = f"diff={r['diff']}" if r["diff"] is not None else "diff=ERR"
-        logger.info(
-            f"[{status}] {r['token']:22} | "
-            f"Calc: {r['calc_balance']:12,} | "
-            f"Actual: {r['actual_balance']:12,} | {diff_str}"
+    if report["negative_count"] > 0:
+        logger.error(
+            f"CRITICAL ERROR: {report['negative_count']} negative balance position(s) found! "
+            "Local ledger invariant violated. Missing incoming transfers or abnormal transaction order."
         )
+
+    if report["is_partial"]:
+        logger.warning(
+            f"WARNING: Only {report['checked_count']} of {report['total_wallet_positions']} positions were checked. "
+            "A passing sample does NOT prove full wallet correctness!"
+        )
+
+    # Separate mismatches and matches
+    mismatches = [r for r in report["results"] if not r["match"]]
+    matches = [r for r in report["results"] if r["match"]]
+
+    if mismatches:
+        logger.error(f"--- DISCREPANCIES / FAILURES ({len(mismatches)}) ---")
+        for r in mismatches:
+            diff_str = f"diff={r['diff']}" if r["diff"] is not None else "diff=ERR"
+            neg_flag = " [CRITICAL: NEGATIVE LOCAL BALANCE]" if r.get("is_negative") else ""
+            err_flag = f" [ERROR: {r['error']}]" if r.get("error") else ""
+            logger.error(
+                f"[FAIL] {r['token']:22} | "
+                f"Calc: {r['calc_balance']:12,} | "
+                f"Actual: {r['actual_balance']:12,} | {diff_str}{neg_flag}{err_flag}"
+            )
+
+    max_display = 20
+    display_matches = matches[:max_display]
+    if display_matches:
+        logger.info(f"--- MATCHED POSITIONS (showing {len(display_matches)} of {len(matches)}) ---")
+        for r in display_matches:
+            logger.info(
+                f"[OK]   {r['token']:22} | "
+                f"Calc: {r['calc_balance']:12,} | "
+                f"Actual: {r['actual_balance']:12,} | diff=0"
+            )
+        if len(matches) > max_display:
+            logger.info(f"... and {len(matches) - max_display} more matched positions.")
 
 
 async def run_live(wallet: str | None = None, poll_interval: float = 3.0) -> None:
@@ -221,11 +273,17 @@ async def async_main() -> None:
     )
     verify_parser.add_argument(
         "--limit",
+        "--sample",
         type=int,
-        default=20,
-        help="Number of positions to check (default: 20)",
+        default=None,
+        dest="limit",
+        help="Check only a sample of N positions (default: check ALL positions)",
     )
-    verify_parser.add_argument("--all", action="store_true", help="Check all positions")
+    verify_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Check all positions (default behavior)",
+    )
 
     scan_parser = subparsers.add_parser(
         "scan", help="Run historical on-chain event backfill"
